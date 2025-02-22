@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimal Web Reader</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif&family=Noto+Serif+SC&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-size: 16px;
+            transition: all 0.3s;
+            font-family: 'Noto Serif', serif;
+        }
+        #container {
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        #reader-mode {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #f5f5f5;
+            padding: 40px;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+        #content {
+            white-space: pre-wrap;
+            line-height: 1.8;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .controls {
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        button, select, input {
+            padding: 8px 16px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: #fff;
+        }
+        button:hover {
+            background: #e0e0e0;
+        }
+        textarea {
+            width: 100%;
+            min-height: 250px;
+            margin-bottom: 10px;
+            resize: vertical;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #textList {
+            width: 100%;
+            max-height: 150px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #textList option {
+            padding: 5px;
+        }
+        #titleInput {
+            flex-grow: 1;
+            min-width: 150px;
+        }
+        .status {
+            font-size: 14px;
+            color: #666;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div class="controls">
+            <input id="titleInput" type="text" placeholder="Enter title...">
+            <button onclick="saveText()">Save</button>
+            <select id="textList" onchange="loadSelectedText()" size="5"></select>
+            <button onclick="deleteSelectedText()">Delete</button>
+            <button onclick="toggleReaderMode()">Reader Mode</button>
+            <select id="fontSelect" onchange="changeFont()">
+                <option value="Noto Serif">English - Noto Serif</option>
+                <option value="Noto Serif SC">中文 - 思源宋体</option>
+            </select>
+            <button onclick="readAloud()">Read Aloud</button>
+            <button onclick="stopReading()">Stop</button>
+            <span id="status" class="status"></span>
+        </div>
+        <textarea id="textInput" placeholder="Enter or paste your text here..."></textarea>
+    </div>
+    <div id="reader-mode">
+        <div class="controls">
+            <button onclick="toggleReaderMode()">Exit Reader Mode</button>
+            <select id="fontSelectReader" onchange="changeFont()">
+                <option value="Noto Serif">English - Noto Serif</option>
+                <option value="Noto Serif SC">中文 - 思源宋体</option>
+            </select>
+            <button onclick="readAloud()">Read Aloud</button>
+            <button onclick="stopReading()">Stop</button>
+        </div>
+        <div id="content"></div>
+    </div>
+
+    <script>
+        let isReaderMode = false;
+        let speech = null;
+        const STATUS_DURATION = 3000;
+
+        function saveText() {
+            const title = document.getElementById('titleInput').value.trim();
+            const content = document.getElementById('textInput').value.trim();
+            if (!title || !content) {
+                showStatus('Please enter both a title and text', 'error');
+                return;
+            }
+
+            const texts = getStoredTexts();
+            const existingIndex = texts.findIndex(t => t.title === title);
+            if (existingIndex !== -1) {
+                texts[existingIndex].content = content;
+                texts[existingIndex].updated = Date.now();
+                showStatus('Text updated');
+            } else {
+                texts.push({ title, content, created: Date.now(), updated: Date.now() });
+                showStatus('Text saved');
+            }
+            
+            localStorage.setItem('readerTexts', JSON.stringify(texts));
+            updateTextList();
+            document.getElementById('titleInput').value = '';
+        }
+
+        function loadSelectedText() {
+            const select = document.getElementById('textList');
+            const selectedTitle = select.value;
+            if (!selectedTitle) return;
+
+            const texts = getStoredTexts();
+            const text = texts.find(t => t.title === selectedTitle);
+            if (text) {
+                document.getElementById('titleInput').value = text.title;
+                document.getElementById('textInput').value = text.content;
+                document.getElementById('content').textContent = text.content;
+                showStatus(`Loaded "${text.title}"`);
+            }
+        }
+
+        function deleteSelectedText() {
+            const select = document.getElementById('textList');
+            const selectedTitle = select.value;
+            if (!selectedTitle) {
+                showStatus('Select a text to delete', 'error');
+                return;
+            }
+
+            if (confirm(`Delete "${selectedTitle}"?`)) {
+                let texts = getStoredTexts();
+                texts = texts.filter(t => t.title !== selectedTitle);
+                localStorage.setItem('readerTexts', JSON.stringify(texts));
+                updateTextList();
+                document.getElementById('titleInput').value = '';
+                document.getElementById('textInput').value = '';
+                document.getElementById('content').textContent = '';
+                showStatus(`Deleted "${selectedTitle}"`);
+            }
+        }
+
+        function updateTextList() {
+            const texts = getStoredTexts().sort((a, b) => b.updated - a.updated);
+            const select = document.getElementById('textList');
+            const currentSelection = select.value;
+            select.innerHTML = '';
+            texts.forEach(text => {
+                const option = document.createElement('option');
+                option.value = text.title;
+                option.textContent = `${text.title} (${new Date(text.updated).toLocaleString()})`;
+                select.appendChild(option);
+            });
+            if (currentSelection && texts.some(t => t.title === currentSelection)) {
+                select.value = currentSelection;
+            }
+        }
+
+        function getStoredTexts() {
+            const stored = localStorage.getItem('readerTexts');
+            return stored ? JSON.parse(stored) : [];
+        }
+
+        function toggleReaderMode() {
+            const reader = document.getElementById('reader-mode');
+            const container = document.getElementById('container');
+            const content = document.getElementById('content');
+            isReaderMode = !isReaderMode;
+
+            if (isReaderMode) {
+                const text = document.getElementById('textInput').value;
+                content.textContent = text || 'No text loaded';
+                reader.style.display = 'block';
+                container.style.display = 'none';
+                document.body.style.fontSize = '28px';
+                syncFontSelects();
+            } else {
+                reader.style.display = 'none';
+                container.style.display = 'block';
+                document.body.style.fontSize = '16px';
+            }
+        }
+
+        function changeFont() {
+            const font = isReaderMode ? 
+                document.getElementById('fontSelectReader').value :
+                document.getElementById('fontSelect').value;
+            document.body.style.fontFamily = `'${font}', serif`;
+            syncFontSelects();
+        }
+
+        function syncFontSelects() {
+            const font = document.getElementById('fontSelect').value;
+            document.getElementById('fontSelectReader').value = font;
+            document.getElementById('fontSelect').value = font;
+        }
+
+        function readAloud() {
+            if (speech) speech.cancel();
+            
+            const text = isReaderMode ? 
+                document.getElementById('content').textContent :
+                document.getElementById('textInput').value;
+            
+            if (!text.trim()) {
+                showStatus('No text to read', 'error');
+                return;
+            }
+
+            speech = new SpeechSynthesisUtterance(text);
+            speech.lang = document.getElementById('fontSelect').value === 'Noto Serif SC' ? 'zh-CN' : 'en-US';
+            speech.rate = 1;
+            speech.pitch = 1;
+            speech.onend = () => showStatus('Reading finished');
+            window.speechSynthesis.speak(speech);
+            showStatus('Reading started');
+        }
+
+        function stopReading() {
+            if (speech) {
+                window.speechSynthesis.cancel();
+                speech = null;
+                showStatus('Reading stopped');
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.style.color = type === 'error' ? '#d00' : '#666';
+            setTimeout(() => status.textContent = '', STATUS_DURATION);
+        }
+
+        updateTextList();
+        document.getElementById('textInput').focus();
+    </script>
+</body>
+</html>
