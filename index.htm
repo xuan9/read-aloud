@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Minimal Web Reader</title>
+    <title>Minimal Web Reader with AIKTP TTS</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif&family=Noto+Serif+SC&family=Crimson+Text&family=Lora&family=Playfair+Display&family=Noto+Sans+SC&family=Source+Han+Serif+SC&display=swap" rel="stylesheet">
     <style>
         body {
@@ -37,6 +37,7 @@
             margin: 0 auto;
             height: calc(100% - 80px);
             overflow: hidden;
+            user-select: text;
         }
         .controls {
             margin-bottom: 20px;
@@ -95,6 +96,33 @@
             color: #666;
             margin-left: 10px;
         }
+        #apiKeyDialog {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+        }
+        #apiKeyDialog input {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        #overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
     </style>
 </head>
 <body>
@@ -114,14 +142,15 @@
                 <option value="Noto Sans SC">中文 - 思源黑体 (Noto Sans SC)</option>
                 <option value="Source Han Serif SC">中文 - 源汉宋体</option>
             </select>
-            <button onclick="readAloud()" id="playButton">Read Aloud</button>
+            <button onclick="promptForAPIKey('readAloud')" id="playButton">Read Aloud</button>
+            <button onclick="readSelection()" id="readSelectionButtonMain">Read Selection</button>
             <button onclick="stopReading()" id="stopButton">Stop</button>
             <span id="status" class="status" role="status"></span>
         </div>
         <textarea id="textInput" placeholder="Enter or paste your text here..." aria-label="Text content"></textarea>
     </div>
     <div id="reader-mode">
-        <div id="readerControls" class="controls" role="toolbar" aria-label="Reader controls">
+        <div id="readerControls" class="controls hidden" role="toolbar" aria-label="Reader controls">
             <button onclick="toggleReaderMode()">Exit Reader Mode</button>
             <select id="fontSelectReader" onchange="changeFont()" aria-label="Font selection">
                 <option value="Noto Serif">English - Noto Serif</option>
@@ -132,17 +161,24 @@
                 <option value="Noto Sans SC">中文 - 思源黑体 (Noto Sans SC)</option>
                 <option value="Source Han Serif SC">中文 - 源汉宋体</option>
             </select>
-            <button onclick="increaseFont()">+</button>
-            <button onclick="decreaseFont()">-</button>
+            <button onclick="increaseFont()" aria-label="Increase font size">+</button>
+            <button onclick="decreaseFont()" aria-label="Decrease font size">-</button>
             <button onclick="autoFormat()">Auto Format</button>
-            <button onclick="readAloud()" id="playButtonReader">Read Aloud</button>
+            <button onclick="promptForAPIKey('readAloud')" id="playButtonReader">Read Aloud</button>
+            <button onclick="readSelection()" id="readSelectionButton">Read Selection</button>
             <button onclick="stopReading()" id="stopButtonReader">Stop</button>
         </div>
         <div id="content" tabindex="0" aria-label="Reader content"></div>
     </div>
+    <div id="overlay"></div>
+    <div id="apiKeyDialog">
+        <label for="apiKeyInput">Enter AIKTP API Key:</label>
+        <input id="apiKeyInput" type="text" placeholder="Your AIKTP API Key">
+        <button onclick="saveAPIKey()">Save</button>
+        <button onclick="closeAPIKeyDialog()">Cancel</button>
+    </div>
 
     <script>
-        // DOM caching
         const elements = {
             container: document.getElementById('container'),
             readerMode: document.getElementById('reader-mode'),
@@ -157,14 +193,22 @@
             stopButton: document.getElementById('stopButton'),
             playButtonReader: document.getElementById('playButtonReader'),
             stopButtonReader: document.getElementById('stopButtonReader'),
-            status: document.getElementById('status')
+            readSelectionButton: document.getElementById('readSelectionButton'),
+            readSelectionButtonMain: document.getElementById('readSelectionButtonMain'),
+            status: document.getElementById('status'),
+            apiKeyDialog: document.getElementById('apiKeyDialog'),
+            apiKeyInput: document.getElementById('apiKeyInput'),
+            overlay: document.getElementById('overlay')
         };
 
         let isReaderMode = false;
-        let speech = null;
+        let audio = null;
         const STATUS_DURATION = 3000;
         let fontSize = localStorage.getItem('fontSize') ? parseInt(localStorage.getItem('fontSize')) : 28;
-        let controlsTimeout;
+        const AIKTP_API_URL = 'https://api.aiktp.com/v1/tts'; // Replace with actual endpoint
+        let AIKTP_API_KEY = localStorage.getItem('aiktpApiKey') || '';
+        const MAX_CACHE_SIZE = 5 * 1024 * 1024; // 5MB limit for audio cache
+        let pendingAction = null;
 
         function saveText() {
             const title = elements.titleInput.value.trim();
@@ -256,13 +300,13 @@
                 elements.container.style.display = 'none';
                 updateReaderFont();
                 syncFontSelects();
-                hideControls();
+                elements.readerControls.classList.add('hidden');
             } else {
                 elements.readerMode.style.display = 'none';
                 elements.container.style.display = 'block';
                 document.body.style.fontSize = '16px';
-                clearTimeout(controlsTimeout);
                 elements.readerControls.classList.remove('hidden');
+                if (audio) audio.pause();
             }
         }
 
@@ -328,58 +372,205 @@
             showStatus(`Auto-formatted to ${fontSize}px`);
         }
 
-        function readAloud() {
-            if (window.speechSynthesis.speaking) {
-                window.speechSynthesis.cancel();
+        function promptForAPIKey(action) {
+            if (!AIKTP_API_KEY) {
+                pendingAction = action;
+                showAPIKeyDialog();
+            } else {
+                if (action === 'readAloud') readAloud();
+                else if (action === 'selection') readSelection();
             }
+        }
 
+        function showAPIKeyDialog() {
+            elements.apiKeyDialog.style.display = 'block';
+            elements.overlay.style.display = 'block';
+            elements.apiKeyInput.value = AIKTP_API_KEY;
+            elements.apiKeyInput.focus();
+        }
+
+        function closeAPIKeyDialog() {
+            elements.apiKeyDialog.style.display = 'none';
+            elements.overlay.style.display = 'none';
+            pendingAction = null;
+        }
+
+        function saveAPIKey() {
+            AIKTP_API_KEY = elements.apiKeyInput.value.trim();
+            if (AIKTP_API_KEY) {
+                localStorage.setItem('aiktpApiKey', AIKTP_API_KEY);
+                closeAPIKeyDialog();
+                if (pendingAction === 'readAloud') readAloud();
+                else if (pendingAction === 'selection') readSelection();
+            } else {
+                showStatus('API key cannot be empty', 'error');
+            }
+        }
+
+        async function readAloud() {
             const text = isReaderMode ? elements.content.textContent : elements.textInput.value;
             if (!text.trim()) {
                 showStatus('No text to read', 'error');
                 return;
             }
+            await playAIKTPAudio(text, 'full');
+        }
 
-            speech = new SpeechSynthesisUtterance(text);
-            speech.lang = elements.fontSelect.value.includes('SC') ? 'zh-CN' : 'en-US';
-            speech.rate = 1;
-            speech.pitch = 1;
-            speech.onend = () => {
-                speech = null;
+        async function readSelection() {
+            const selection = window.getSelection().toString().trim();
+            if (!selection) {
+                showStatus('No text selected', 'error');
+                return;
+            }
+            await playAIKTPAudio(selection, 'selection');
+        }
+
+        async function playAIKTPAudio(text, type) {
+            if (audio) {
+                audio.pause();
+                URL.revokeObjectURL(audio.src);
+                audio = null;
+            }
+
+            if (!AIKTP_API_KEY) {
+                promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
+                return;
+            }
+
+            const cacheKey = `audio_${hashText(text)}`;
+            const cachedAudio = localStorage.getItem(cacheKey);
+
+            if (cachedAudio) {
+                audio = new Audio(cachedAudio);
+                audio.play().catch(e => showStatus(`Playback error: ${e.message}`, 'error'));
                 updateTTSButtons();
-                showStatus('Reading finished');
-            };
-            window.speechSynthesis.speak(speech);
-            updateTTSButtons();
-            showStatus('Reading started');
+                showStatus('Playing cached audio');
+                audio.onended = cleanupAudio;
+                return;
+            }
+
+            try {
+                const voice = elements.fontSelect.value.includes('SC') ? 'zh-CN-XiaoxiaoNeural' : 'en-US-JennyNeural';
+                const response = await fetch(AIKTP_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${AIKTP_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: text.slice(0, 30000),
+                        voice: voice,
+                        speed: 1,
+                        pitch: 1
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`AIKTP API error: ${response.statusText}`);
+                }
+
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                audio = new Audio(audioUrl);
+
+                const audioSize = audioBlob.size;
+                if (audioSize < MAX_CACHE_SIZE && estimateStorageSize() + audioSize < MAX_CACHE_SIZE) {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        try {
+                            localStorage.setItem(cacheKey, reader.result);
+                            cleanOldCache();
+                        } catch (e) {
+                            console.warn('Audio caching failed: ', e);
+                        }
+                    };
+                    reader.readAsDataURL(audioBlob);
+                }
+
+                audio.play().catch(e => showStatus(`Playback error: ${e.message}`, 'error'));
+                updateTTSButtons();
+                showStatus('Reading started');
+                audio.onended = cleanupAudio;
+            } catch (e) {
+                showStatus(`TTS error: ${e.message}`, 'error');
+                promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
+            }
         }
 
         function stopReading() {
-            if (window.speechSynthesis.speaking) {
-                window.speechSynthesis.cancel();
-                speech = null;
+            if (audio) {
+                audio.pause();
+                URL.revokeObjectURL(audio.src);
+                audio = null;
                 updateTTSButtons();
                 showStatus('Reading stopped');
             }
         }
 
-        function updateTTSButtons() {
-            const isSpeaking = window.speechSynthesis.speaking;
-            elements.playButton.disabled = isSpeaking;
-            elements.stopButton.disabled = !isSpeaking;
-            elements.playButtonReader.disabled = isSpeaking;
-            elements.stopButtonReader.disabled = !isSpeaking;
-        }
-
-        function showControls() {
-            clearTimeout(controlsTimeout);
-            elements.readerControls.classList.remove('hidden');
-            controlsTimeout = setTimeout(hideControls, 3000);
-        }
-
-        function hideControls() {
-            if (!elements.readerControls.matches(':hover')) {
-                elements.readerControls.classList.add('hidden');
+        function cleanupAudio() {
+            if (audio) {
+                URL.revokeObjectURL(audio.src);
+                audio = null;
             }
+            updateTTSButtons();
+            showStatus('Reading finished');
+        }
+
+        function updateTTSButtons() {
+            const isPlaying = audio && !audio.paused;
+            elements.playButton.disabled = isPlaying;
+            elements.stopButton.disabled = !isPlaying;
+            elements.playButtonReader.disabled = isPlaying;
+            elements.stopButtonReader.disabled = !isPlaying;
+            elements.readSelectionButton.disabled = isPlaying;
+            elements.readSelectionButtonMain.disabled = isPlaying;
+
+            elements.playButton.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
+            elements.playButtonReader.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
+        }
+
+        function hashText(text) {
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                hash = ((hash << 5) - hash) + text.charCodeAt(i);
+                hash |= 0;
+            }
+            return hash.toString(36);
+        }
+
+        function estimateStorageSize() {
+            let total = 0;
+            for (let key in localStorage) {
+                if (key.startsWith('audio_')) {
+                    total += ((localStorage[key].length + key.length) * 2);
+                }
+            }
+            return total;
+        }
+
+        function cleanOldCache() {
+            const audioKeys = Object.keys(localStorage).filter(k => k.startsWith('audio_'));
+            if (estimateStorageSize() > MAX_CACHE_SIZE) {
+                audioKeys.sort((a, b) => {
+                    const aTime = parseInt(localStorage.getItem(a + '_time') || '0');
+                    const bTime = parseInt(localStorage.getItem(b + '_time') || '0');
+                    return aTime - bTime;
+                });
+                while (estimateStorageSize() > MAX_CACHE_SIZE * 0.8 && audioKeys.length) {
+                    const key = audioKeys.shift();
+                    localStorage.removeItem(key);
+                    localStorage.removeItem(key + '_time');
+                }
+            }
+            audioKeys.forEach(key => localStorage.setItem(key + '_time', Date.now()));
+        }
+
+        function checkTopSection(event) {
+            if (!isReaderMode) return;
+            const topThreshold = Math.min(150, window.innerHeight * 0.2);
+            const isTop = event.clientY <= topThreshold;
+            elements.readerControls.classList.toggle('hidden', !isTop);
+            if (isTop) elements.readerControls.focus();
         }
 
         function showStatus(message, type = 'info') {
@@ -388,12 +579,11 @@
             setTimeout(() => elements.status.textContent = '', STATUS_DURATION);
         }
 
-        // Event listeners for reader mode controls
-        elements.readerMode.addEventListener('mousemove', debounce(showControls, 200));
-        elements.readerMode.addEventListener('mouseleave', hideControls);
-        elements.readerMode.addEventListener('touchstart', showControls);
+        elements.readerMode.addEventListener('mousemove', debounce(checkTopSection, 100));
+        elements.readerMode.addEventListener('touchmove', debounce(checkTopSection, 100));
+        elements.readerControls.addEventListener('mouseenter', () => elements.readerControls.classList.remove('hidden'));
+        elements.readerControls.addEventListener('mouseleave', () => checkTopSection({ clientY: window.innerHeight }));
 
-        // Debounce utility
         function debounce(func, wait) {
             let timeout;
             return function (...args) {
@@ -402,7 +592,6 @@
             };
         }
 
-        // Initialize
         updateTextList();
         elements.textInput.focus();
         updateTTSButtons();
