@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Minimal Web Reader with AIKTP TTS</title>
+    <title>Minimal Web Reader with Google TTS</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif&family=Noto+Serif+SC&family=Crimson+Text&family=Lora&family=Playfair+Display&family=Noto+Sans+SC&family=Source+Han+Serif+SC&display=swap" rel="stylesheet">
     <style>
         body {
@@ -172,8 +172,8 @@
     </div>
     <div id="overlay"></div>
     <div id="apiKeyDialog">
-        <label for="apiKeyInput">Enter AIKTP API Key:</label>
-        <input id="apiKeyInput" type="text" placeholder="Your AIKTP API Key">
+        <label for="apiKeyInput">Enter Google Cloud API Key:</label>
+        <input id="apiKeyInput" type="text" placeholder="Your Google Cloud API Key">
         <button onclick="saveAPIKey()">Save</button>
         <button onclick="closeAPIKeyDialog()">Cancel</button>
     </div>
@@ -205,8 +205,8 @@
         let audio = null;
         const STATUS_DURATION = 3000;
         let fontSize = localStorage.getItem('fontSize') ? parseInt(localStorage.getItem('fontSize')) : 28;
-        const AIKTP_API_URL = 'https://api.aiktp.com/v1/tts'; // Replace with actual endpoint
-        let AIKTP_API_KEY = localStorage.getItem('aiktpApiKey') || '';
+        const GOOGLE_TTS_API_URL = 'https://texttospeech.googleapis.com/v1/text:synthesize';
+        let GOOGLE_API_KEY = localStorage.getItem('googleApiKey') || '';
         const MAX_CACHE_SIZE = 5 * 1024 * 1024; // 5MB limit for audio cache
         let pendingAction = null;
 
@@ -373,7 +373,7 @@
         }
 
         function promptForAPIKey(action) {
-            if (!AIKTP_API_KEY) {
+            if (!GOOGLE_API_KEY) {
                 pendingAction = action;
                 showAPIKeyDialog();
             } else {
@@ -385,7 +385,7 @@
         function showAPIKeyDialog() {
             elements.apiKeyDialog.style.display = 'block';
             elements.overlay.style.display = 'block';
-            elements.apiKeyInput.value = AIKTP_API_KEY;
+            elements.apiKeyInput.value = GOOGLE_API_KEY;
             elements.apiKeyInput.focus();
         }
 
@@ -396,9 +396,9 @@
         }
 
         function saveAPIKey() {
-            AIKTP_API_KEY = elements.apiKeyInput.value.trim();
-            if (AIKTP_API_KEY) {
-                localStorage.setItem('aiktpApiKey', AIKTP_API_KEY);
+            GOOGLE_API_KEY = elements.apiKeyInput.value.trim();
+            if (GOOGLE_API_KEY) {
+                localStorage.setItem('googleApiKey', GOOGLE_API_KEY);
                 closeAPIKeyDialog();
                 if (pendingAction === 'readAloud') readAloud();
                 else if (pendingAction === 'selection') readSelection();
@@ -413,7 +413,7 @@
                 showStatus('No text to read', 'error');
                 return;
             }
-            await playAIKTPAudio(text, 'full');
+            await playGoogleTTSAudio(text, 'full');
         }
 
         async function readSelection() {
@@ -422,17 +422,17 @@
                 showStatus('No text selected', 'error');
                 return;
             }
-            await playAIKTPAudio(selection, 'selection');
+            await playGoogleTTSAudio(selection, 'selection');
         }
 
-        async function playAIKTPAudio(text, type) {
+        async function playGoogleTTSAudio(text, type) {
             if (audio) {
                 audio.pause();
                 URL.revokeObjectURL(audio.src);
                 audio = null;
             }
 
-            if (!AIKTP_API_KEY) {
+            if (!GOOGLE_API_KEY) {
                 promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
                 return;
             }
@@ -450,26 +450,27 @@
             }
 
             try {
-                const voice = elements.fontSelect.value.includes('SC') ? 'zh-CN-XiaoxiaoNeural' : 'en-US-JennyNeural';
-                const response = await fetch(AIKTP_API_URL, {
+                const languageCode = elements.fontSelect.value.includes('SC') ? 'zh-CN' : 'en-US';
+                const voiceName = elements.fontSelect.value.includes('SC') ? 'cmn-CN-Wavenet-A' : 'en-US-Wavenet-D';
+                const response = await fetch(`${GOOGLE_TTS_API_URL}?key=${GOOGLE_API_KEY}`, {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${AIKTP_API_KEY}`,
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        text: text.slice(0, 30000),
-                        voice: voice,
-                        speed: 1,
-                        pitch: 1
+                        input: { text: text.slice(0, 5000) }, // Google TTS limit: 5,000 chars
+                        voice: { languageCode, name: voiceName },
+                        audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0, pitch: 0 }
                     })
                 });
 
                 if (!response.ok) {
-                    throw new Error(`AIKTP API error: ${response.statusText}`);
+                    throw new Error(`Google TTS API error: ${response.statusText}`);
                 }
 
-                const audioBlob = await response.blob();
+                const data = await response.json();
+                const audioContent = data.audioContent;
+                const audioBlob = new Blob([Uint8Array.from(atob(audioContent), c => c.charCodeAt(0))], { type: 'audio/mp3' });
                 const audioUrl = URL.createObjectURL(audioBlob);
                 audio = new Audio(audioUrl);
 
@@ -523,7 +524,7 @@
             elements.playButtonReader.disabled = isPlaying;
             elements.stopButtonReader.disabled = !isPlaying;
             elements.readSelectionButton.disabled = isPlaying;
-            elements.readSelectionButtonMain.disabled = isPlaying;
+            elements.readSelectionButtonMain.disabled = !isPlaying;
 
             elements.playButton.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
             elements.playButtonReader.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
