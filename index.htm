@@ -4,8 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Minimal Web Reader</title>
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif&family=Noto+Serif+SC&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif&family=Noto+Serif+SC&family=Crimson+Text&family=Lora&family=Playfair+Display&family=Noto+Sans+SC&family=Source+Han+Serif+SC&display=swap" rel="stylesheet">
     <style>
         body {
             margin: 0;
@@ -36,6 +35,8 @@
             line-height: 1.8;
             max-width: 800px;
             margin: 0 auto;
+            height: calc(100% - 80px);
+            overflow: hidden;
         }
         .controls {
             margin-bottom: 20px;
@@ -43,6 +44,11 @@
             flex-wrap: wrap;
             gap: 10px;
             align-items: center;
+            transition: opacity 0.3s;
+        }
+        .controls.hidden {
+            opacity: 0;
+            pointer-events: none;
         }
         button, select, input {
             padding: 8px 16px;
@@ -51,8 +57,12 @@
             border-radius: 4px;
             background: #fff;
         }
-        button:hover {
+        button:hover:not(:disabled), select:hover {
             background: #e0e0e0;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         textarea {
             width: 100%;
@@ -89,43 +99,76 @@
 </head>
 <body>
     <div id="container">
-        <div class="controls">
-            <input id="titleInput" type="text" placeholder="Enter title...">
+        <div class="controls" role="toolbar" aria-label="Main controls">
+            <input id="titleInput" type="text" placeholder="Enter title..." aria-label="Text title">
             <button onclick="saveText()">Save</button>
-            <select id="textList" onchange="loadSelectedText()" size="5"></select>
+            <select id="textList" onchange="loadSelectedText()" size="5" aria-label="Saved texts"></select>
             <button onclick="deleteSelectedText()">Delete</button>
             <button onclick="toggleReaderMode()">Reader Mode</button>
-            <select id="fontSelect" onchange="changeFont()">
+            <select id="fontSelect" onchange="changeFont()" aria-label="Font selection">
                 <option value="Noto Serif">English - Noto Serif</option>
-                <option value="Noto Serif SC">中文 - 思源宋体</option>
+                <option value="Crimson Text">English - Crimson Text</option>
+                <option value="Lora">English - Lora</option>
+                <option value="Playfair Display">English - Playfair Display</option>
+                <option value="Noto Serif SC">中文 - 思源宋体 (Noto Serif SC)</option>
+                <option value="Noto Sans SC">中文 - 思源黑体 (Noto Sans SC)</option>
+                <option value="Source Han Serif SC">中文 - 源汉宋体</option>
             </select>
-            <button onclick="readAloud()">Read Aloud</button>
-            <button onclick="stopReading()">Stop</button>
-            <span id="status" class="status"></span>
+            <button onclick="readAloud()" id="playButton">Read Aloud</button>
+            <button onclick="stopReading()" id="stopButton">Stop</button>
+            <span id="status" class="status" role="status"></span>
         </div>
-        <textarea id="textInput" placeholder="Enter or paste your text here..."></textarea>
+        <textarea id="textInput" placeholder="Enter or paste your text here..." aria-label="Text content"></textarea>
     </div>
     <div id="reader-mode">
-        <div class="controls">
+        <div id="readerControls" class="controls" role="toolbar" aria-label="Reader controls">
             <button onclick="toggleReaderMode()">Exit Reader Mode</button>
-            <select id="fontSelectReader" onchange="changeFont()">
+            <select id="fontSelectReader" onchange="changeFont()" aria-label="Font selection">
                 <option value="Noto Serif">English - Noto Serif</option>
-                <option value="Noto Serif SC">中文 - 思源宋体</option>
+                <option value="Crimson Text">English - Crimson Text</option>
+                <option value="Lora">English - Lora</option>
+                <option value="Playfair Display">English - Playfair Display</option>
+                <option value="Noto Serif SC">中文 - 思源宋体 (Noto Serif SC)</option>
+                <option value="Noto Sans SC">中文 - 思源黑体 (Noto Sans SC)</option>
+                <option value="Source Han Serif SC">中文 - 源汉宋体</option>
             </select>
-            <button onclick="readAloud()">Read Aloud</button>
-            <button onclick="stopReading()">Stop</button>
+            <button onclick="increaseFont()">+</button>
+            <button onclick="decreaseFont()">-</button>
+            <button onclick="autoFormat()">Auto Format</button>
+            <button onclick="readAloud()" id="playButtonReader">Read Aloud</button>
+            <button onclick="stopReading()" id="stopButtonReader">Stop</button>
         </div>
-        <div id="content"></div>
+        <div id="content" tabindex="0" aria-label="Reader content"></div>
     </div>
 
     <script>
+        // DOM caching
+        const elements = {
+            container: document.getElementById('container'),
+            readerMode: document.getElementById('reader-mode'),
+            content: document.getElementById('content'),
+            textInput: document.getElementById('textInput'),
+            titleInput: document.getElementById('titleInput'),
+            textList: document.getElementById('textList'),
+            fontSelect: document.getElementById('fontSelect'),
+            fontSelectReader: document.getElementById('fontSelectReader'),
+            readerControls: document.getElementById('readerControls'),
+            playButton: document.getElementById('playButton'),
+            stopButton: document.getElementById('stopButton'),
+            playButtonReader: document.getElementById('playButtonReader'),
+            stopButtonReader: document.getElementById('stopButtonReader'),
+            status: document.getElementById('status')
+        };
+
         let isReaderMode = false;
         let speech = null;
         const STATUS_DURATION = 3000;
+        let fontSize = localStorage.getItem('fontSize') ? parseInt(localStorage.getItem('fontSize')) : 28;
+        let controlsTimeout;
 
         function saveText() {
-            const title = document.getElementById('titleInput').value.trim();
-            const content = document.getElementById('textInput').value.trim();
+            const title = elements.titleInput.value.trim();
+            const content = elements.textInput.value.trim();
             if (!title || !content) {
                 showStatus('Please enter both a title and text', 'error');
                 return;
@@ -133,38 +176,40 @@
 
             const texts = getStoredTexts();
             const existingIndex = texts.findIndex(t => t.title === title);
-            if (existingIndex !== -1) {
-                texts[existingIndex].content = content;
-                texts[existingIndex].updated = Date.now();
-                showStatus('Text updated');
-            } else {
-                texts.push({ title, content, created: Date.now(), updated: Date.now() });
-                showStatus('Text saved');
+            try {
+                if (existingIndex !== -1) {
+                    texts[existingIndex].content = content;
+                    texts[existingIndex].updated = Date.now();
+                    showStatus('Text updated');
+                } else {
+                    texts.push({ title, content, created: Date.now(), updated: Date.now() });
+                    showStatus('Text saved');
+                }
+                localStorage.setItem('readerTexts', JSON.stringify(texts));
+                updateTextList();
+                elements.titleInput.value = '';
+            } catch (e) {
+                showStatus('Storage full. Delete some texts.', 'error');
             }
-            
-            localStorage.setItem('readerTexts', JSON.stringify(texts));
-            updateTextList();
-            document.getElementById('titleInput').value = '';
         }
 
         function loadSelectedText() {
-            const select = document.getElementById('textList');
-            const selectedTitle = select.value;
+            const selectedTitle = elements.textList.value;
             if (!selectedTitle) return;
 
             const texts = getStoredTexts();
             const text = texts.find(t => t.title === selectedTitle);
             if (text) {
-                document.getElementById('titleInput').value = text.title;
-                document.getElementById('textInput').value = text.content;
-                document.getElementById('content').textContent = text.content;
+                elements.titleInput.value = text.title;
+                elements.textInput.value = text.content;
+                elements.content.textContent = text.content;
                 showStatus(`Loaded "${text.title}"`);
+                if (isReaderMode) updateReaderFont();
             }
         }
 
         function deleteSelectedText() {
-            const select = document.getElementById('textList');
-            const selectedTitle = select.value;
+            const selectedTitle = elements.textList.value;
             if (!selectedTitle) {
                 showStatus('Select a text to delete', 'error');
                 return;
@@ -175,26 +220,25 @@
                 texts = texts.filter(t => t.title !== selectedTitle);
                 localStorage.setItem('readerTexts', JSON.stringify(texts));
                 updateTextList();
-                document.getElementById('titleInput').value = '';
-                document.getElementById('textInput').value = '';
-                document.getElementById('content').textContent = '';
+                elements.titleInput.value = '';
+                elements.textInput.value = '';
+                elements.content.textContent = '';
                 showStatus(`Deleted "${selectedTitle}"`);
             }
         }
 
         function updateTextList() {
             const texts = getStoredTexts().sort((a, b) => b.updated - a.updated);
-            const select = document.getElementById('textList');
-            const currentSelection = select.value;
-            select.innerHTML = '';
+            const currentSelection = elements.textList.value;
+            elements.textList.innerHTML = '';
             texts.forEach(text => {
                 const option = document.createElement('option');
                 option.value = text.title;
                 option.textContent = `${text.title} (${new Date(text.updated).toLocaleString()})`;
-                select.appendChild(option);
+                elements.textList.appendChild(option);
             });
             if (currentSelection && texts.some(t => t.title === currentSelection)) {
-                select.value = currentSelection;
+                elements.textList.value = currentSelection;
             }
         }
 
@@ -204,77 +248,164 @@
         }
 
         function toggleReaderMode() {
-            const reader = document.getElementById('reader-mode');
-            const container = document.getElementById('container');
-            const content = document.getElementById('content');
             isReaderMode = !isReaderMode;
-
             if (isReaderMode) {
-                const text = document.getElementById('textInput').value;
-                content.textContent = text || 'No text loaded';
-                reader.style.display = 'block';
-                container.style.display = 'none';
-                document.body.style.fontSize = '28px';
+                const text = elements.textInput.value;
+                elements.content.textContent = text || 'No text loaded';
+                elements.readerMode.style.display = 'block';
+                elements.container.style.display = 'none';
+                updateReaderFont();
                 syncFontSelects();
+                hideControls();
             } else {
-                reader.style.display = 'none';
-                container.style.display = 'block';
+                elements.readerMode.style.display = 'none';
+                elements.container.style.display = 'block';
                 document.body.style.fontSize = '16px';
+                clearTimeout(controlsTimeout);
+                elements.readerControls.classList.remove('hidden');
             }
         }
 
         function changeFont() {
-            const font = isReaderMode ? 
-                document.getElementById('fontSelectReader').value :
-                document.getElementById('fontSelect').value;
+            const font = isReaderMode ? elements.fontSelectReader.value : elements.fontSelect.value;
             document.body.style.fontFamily = `'${font}', serif`;
             syncFontSelects();
+            if (isReaderMode) updateReaderFont();
         }
 
         function syncFontSelects() {
-            const font = document.getElementById('fontSelect').value;
-            document.getElementById('fontSelectReader').value = font;
-            document.getElementById('fontSelect').value = font;
+            const font = elements.fontSelect.value;
+            elements.fontSelectReader.value = font;
+            elements.fontSelect.value = font;
+        }
+
+        function updateReaderFont() {
+            elements.content.style.fontSize = `${fontSize}px`;
+            localStorage.setItem('fontSize', fontSize);
+        }
+
+        function increaseFont() {
+            fontSize = Math.min(fontSize + 2, 72);
+            updateReaderFont();
+            showStatus(`Font size: ${fontSize}px`);
+        }
+
+        function decreaseFont() {
+            fontSize = Math.max(fontSize - 2, 12);
+            updateReaderFont();
+            showStatus(`Font size: ${fontSize}px`);
+        }
+
+        function autoFormat() {
+            const text = elements.content.textContent.trim();
+            if (!text) {
+                showStatus('No text to format', 'error');
+                return;
+            }
+
+            elements.content.style.overflow = 'hidden';
+            let cleanText = text.replace(/\s+/g, ' ').trim();
+            elements.content.textContent = cleanText;
+
+            let minSize = 12;
+            let maxSize = 72;
+            let bestSize = minSize;
+            const contentHeight = elements.content.clientHeight;
+            const contentWidth = elements.content.clientWidth;
+
+            while (minSize <= maxSize) {
+                const midSize = Math.floor((minSize + maxSize) / 2);
+                elements.content.style.fontSize = `${midSize}px`;
+                if (elements.content.scrollHeight <= contentHeight && elements.content.scrollWidth <= contentWidth) {
+                    bestSize = midSize;
+                    minSize = midSize + 1;
+                } else {
+                    maxSize = midSize - 1;
+                }
+            }
+            fontSize = bestSize;
+            updateReaderFont();
+            showStatus(`Auto-formatted to ${fontSize}px`);
         }
 
         function readAloud() {
-            if (speech) speech.cancel();
-            
-            const text = isReaderMode ? 
-                document.getElementById('content').textContent :
-                document.getElementById('textInput').value;
-            
+            if (window.speechSynthesis.speaking) {
+                window.speechSynthesis.cancel();
+            }
+
+            const text = isReaderMode ? elements.content.textContent : elements.textInput.value;
             if (!text.trim()) {
                 showStatus('No text to read', 'error');
                 return;
             }
 
             speech = new SpeechSynthesisUtterance(text);
-            speech.lang = document.getElementById('fontSelect').value === 'Noto Serif SC' ? 'zh-CN' : 'en-US';
+            speech.lang = elements.fontSelect.value.includes('SC') ? 'zh-CN' : 'en-US';
             speech.rate = 1;
             speech.pitch = 1;
-            speech.onend = () => showStatus('Reading finished');
+            speech.onend = () => {
+                speech = null;
+                updateTTSButtons();
+                showStatus('Reading finished');
+            };
             window.speechSynthesis.speak(speech);
+            updateTTSButtons();
             showStatus('Reading started');
         }
 
         function stopReading() {
-            if (speech) {
+            if (window.speechSynthesis.speaking) {
                 window.speechSynthesis.cancel();
                 speech = null;
+                updateTTSButtons();
                 showStatus('Reading stopped');
             }
         }
 
-        function showStatus(message, type = 'info') {
-            const status = document.getElementById('status');
-            status.textContent = message;
-            status.style.color = type === 'error' ? '#d00' : '#666';
-            setTimeout(() => status.textContent = '', STATUS_DURATION);
+        function updateTTSButtons() {
+            const isSpeaking = window.speechSynthesis.speaking;
+            elements.playButton.disabled = isSpeaking;
+            elements.stopButton.disabled = !isSpeaking;
+            elements.playButtonReader.disabled = isSpeaking;
+            elements.stopButtonReader.disabled = !isSpeaking;
         }
 
+        function showControls() {
+            clearTimeout(controlsTimeout);
+            elements.readerControls.classList.remove('hidden');
+            controlsTimeout = setTimeout(hideControls, 3000);
+        }
+
+        function hideControls() {
+            if (!elements.readerControls.matches(':hover')) {
+                elements.readerControls.classList.add('hidden');
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            elements.status.textContent = message;
+            elements.status.style.color = type === 'error' ? '#d00' : '#666';
+            setTimeout(() => elements.status.textContent = '', STATUS_DURATION);
+        }
+
+        // Event listeners for reader mode controls
+        elements.readerMode.addEventListener('mousemove', debounce(showControls, 200));
+        elements.readerMode.addEventListener('mouseleave', hideControls);
+        elements.readerMode.addEventListener('touchstart', showControls);
+
+        // Debounce utility
+        function debounce(func, wait) {
+            let timeout;
+            return function (...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
+        // Initialize
         updateTextList();
-        document.getElementById('textInput').focus();
+        elements.textInput.focus();
+        updateTTSButtons();
     </script>
 </body>
 </html>
