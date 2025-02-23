@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Minimal Web Reader with Google TTS</title>
+    <title>Web Reader</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif&family=Noto+Serif+SC&family=Crimson+Text&family=Lora&family=Playfair+Display&family=Noto+Sans+SC&family=Source+Han+Serif+SC&display=swap" rel="stylesheet">
     <style>
         body {
@@ -131,7 +131,7 @@
 </head>
 <body>
     <div id="container">
-        <select id="textList" onchange="loadSelectedText()" size="5" aria-label="Saved texts"></select>
+        <select id="textList" size="5" aria-label="Saved texts"></select>
         <input id="titleInput" type="text" placeholder="Enter title..." aria-label="Text title">
         <textarea id="textInput" placeholder="Enter or paste your text here..." aria-label="Text content"></textarea>     
        <div style="display: flex; flex-direction: row; justify-content: space-between; margin: 10px 0;"> 
@@ -314,6 +314,7 @@
         }
 
         function syncFontSelects() {
+            if (!elements.fontSelect || !elements.fontSelectReader) return;
             const font = elements.fontSelect.value;
             elements.fontSelectReader.value = font;
             elements.fontSelect.value = font;
@@ -545,15 +546,20 @@
             }
             updateTTSButtons();
         }
-
+        let isLoopMode = false;
+        function toggleLoopPlay() {
+            isLoopMode = !isLoopMode;
+            elements.loopPlayButton.textContent = `Loop Play: ${isLoopMode ? 'On' : 'Off'}`;
+            showStatus(`Loop play ${isLoopMode ? 'enabled' : 'disabled'}`);
+        }
         function updateTTSButtons() {
             const isPlaying = audio !== null;
-            elements.playButton.disabled = isPlaying;
-            elements.playButtonReader.disabled = isPlaying;
-            elements.readSelectionButton.disabled = isPlaying;
-            elements.readSelectionButtonMain.disabled = isPlaying;
-            elements.stopButton.disabled = !isPlaying;
-            elements.stopButtonReader.disabled = !isPlaying;
+            if (elements.playButton) elements.playButton.disabled = isPlaying;
+            if (elements.playButtonReader) elements.playButtonReader.disabled = isPlaying;
+            if (elements.readSelectionButton) elements.readSelectionButton.disabled = isPlaying;
+            if (elements.readSelectionButtonMain) elements.readSelectionButtonMain.disabled = isPlaying;
+            if (elements.stopButton) elements.stopButton.disabled = !isPlaying;
+            if (elements.stopButtonReader) elements.stopButtonReader.disabled = !isPlaying;
         }
 
         function stopReading() {
@@ -673,6 +679,13 @@
         elements.readerControls.addEventListener('mouseenter', () => elements.readerControls.classList.remove('hidden'));
         elements.readerControls.addEventListener('mouseleave', () => checkTopSection({ clientY: window.innerHeight }));
 
+        // Add ESC key handler for reader mode
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && isReaderMode) {
+                toggleReaderMode();
+            }
+        });
+
         function debounce(func, wait) {
             let timeout;
             return function (...args) {
@@ -680,6 +693,15 @@
                 timeout = setTimeout(() => func.apply(this, args), wait);
             };
         }
+
+        // Update text list event handlers
+        elements.textList.addEventListener('change', loadSelectedText);
+        elements.textList.addEventListener('dblclick', () => {
+            if (elements.textList.value) {
+                loadSelectedText();
+                if (!isReaderMode) toggleReaderMode();
+            }
+        });
 
         updateTextList();
         elements.textInput.focus();
