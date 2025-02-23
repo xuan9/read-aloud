@@ -199,6 +199,7 @@
 
         let isReaderMode = false;
         let audio = null;
+        let isLoopMode = false;
         const STATUS_DURATION = 3000;
         let fontSize = localStorage.getItem('fontSize') ? parseInt(localStorage.getItem('fontSize')) : 28;
         const GOOGLE_TTS_API_URL = 'https://texttospeech.googleapis.com/v1/text:synthesize';
@@ -522,8 +523,18 @@
                 updateTTSButtons();
                 showStatus('Reading started');
                 audio.onended = () => {
-                    cleanupAudio();
-                    showStatus('Reading completed');
+                    if (isLoopMode) {
+                        audio.currentTime = 0;
+                        audio.play().catch(e => {
+                            console.error('Loop playback error:', e);
+                            cleanupAudio();
+                            showStatus('Loop playback failed', 'error');
+                        });
+                        showStatus('Restarting playback (Loop mode)');
+                    } else {
+                        cleanupAudio();
+                        showStatus('Reading completed');
+                    }
                 };
 
             } catch (e) {
@@ -546,12 +557,6 @@
             }
             updateTTSButtons();
         }
-        let isLoopMode = false;
-        function toggleLoopPlay() {
-            isLoopMode = !isLoopMode;
-            elements.loopPlayButton.textContent = `Loop Play: ${isLoopMode ? 'On' : 'Off'}`;
-            showStatus(`Loop play ${isLoopMode ? 'enabled' : 'disabled'}`);
-        }
         function updateTTSButtons() {
             const isPlaying = audio !== null;
             if (elements.playButton) elements.playButton.disabled = isPlaying;
@@ -565,6 +570,12 @@
         function stopReading() {
             cleanupAudio();
             showStatus('Reading stopped');
+        }
+
+        function toggleLoopPlay() {
+            isLoopMode = !isLoopMode;
+            elements.loopPlayButton.textContent = `Loop Play: ${isLoopMode ? 'On' : 'Off'}`;
+            showStatus(`Loop play ${isLoopMode ? 'enabled' : 'disabled'}`);
         }
 
         function cleanOldCache() {
@@ -682,6 +693,7 @@
         // Add ESC key handler for reader mode
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && isReaderMode) {
+                stopReading();
                 toggleReaderMode();
             }
         });
