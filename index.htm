@@ -38,6 +38,8 @@
             height: calc(100% - 80px);
             overflow: hidden;
             user-select: text;
+            font: "Source Han Serif SC";
+            font-family: 'Noto Serif', serif;
         }
         .controls {
             margin-bottom: 20px;
@@ -437,28 +439,17 @@
                 return;
             }
 
-            const cacheKey = `audio_${hashText(text)}`;
-            const cachedAudio = localStorage.getItem(cacheKey);
-
-            if (cachedAudio) {
-                audio = new Audio(cachedAudio);
-                audio.play().catch(e => showStatus(`Playback error: ${e.message}`, 'error'));
-                updateTTSButtons();
-                showStatus('Playing cached audio');
-                audio.onended = cleanupAudio;
-                return;
-            }
-
             try {
-                const languageCode = elements.fontSelect.value.includes('SC') ? 'zh-CN' : 'en-US';
-                const voiceName = elements.fontSelect.value.includes('SC') ? 'cmn-CN-Wavenet-A' : 'en-US-Wavenet-D';
+                const hasChinese = /[\u4e00-\u9fff]/.test(text);
+                const languageCode = hasChinese ? 'cmn-CN' : 'en-US';
+                const voiceName = hasChinese ? 'cmn-CN-Wavenet-A' : 'en-US-Wavenet-D';
                 const response = await fetch(`${GOOGLE_TTS_API_URL}?key=${GOOGLE_API_KEY}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        input: { text: text.slice(0, 5000) }, // Google TTS limit: 5,000 chars
+                        input: { text: text.slice(0, 5000) },
                         voice: { languageCode, name: voiceName },
                         audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0, pitch: 0 }
                     })
