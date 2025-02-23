@@ -42,12 +42,12 @@
             font-family: 'Noto Serif', serif;
         }
         .controls {
-            margin-bottom: 20px;
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
             align-items: center;
             transition: opacity 0.3s;
+            padding:40px;
         }
         .controls.hidden {
             opacity: 0;
@@ -79,7 +79,7 @@
         }
         #textList {
             width: 100%;
-            max-height: 150px;
+            max-height: 200px;
             overflow-y: auto;
             margin-bottom: 10px;
             padding: 5px;
@@ -91,7 +91,9 @@
         }
         #titleInput {
             flex-grow: 1;
-            min-width: 150px;
+            width: 100%;
+            padding: 5px;
+            margin-right: 40px;
         }
         .status {
             font-size: 14px;
@@ -129,27 +131,17 @@
 </head>
 <body>
     <div id="container">
-        <div class="controls" role="toolbar" aria-label="Main controls">
-            <input id="titleInput" type="text" placeholder="Enter title..." aria-label="Text title">
+        <select id="textList" onchange="loadSelectedText()" size="5" aria-label="Saved texts"></select>
+        <input id="titleInput" type="text" placeholder="Enter title..." aria-label="Text title">
+        <textarea id="textInput" placeholder="Enter or paste your text here..." aria-label="Text content"></textarea>     
+       <div style="display: flex; flex-direction: row; justify-content: space-between; margin: 10px 0;"> 
             <button onclick="saveText()">Save</button>
-            <select id="textList" onchange="loadSelectedText()" size="5" aria-label="Saved texts"></select>
-            <button onclick="deleteSelectedText()">Delete</button>
             <button onclick="toggleReaderMode()">Reader Mode</button>
-            <select id="fontSelect" onchange="changeFont()" aria-label="Font selection">
-                <option value="Noto Serif">English - Noto Serif</option>
-                <option value="Crimson Text">English - Crimson Text</option>
-                <option value="Lora">English - Lora</option>
-                <option value="Playfair Display">English - Playfair Display</option>
-                <option value="Noto Serif SC">中文 - 思源宋体 (Noto Serif SC)</option>
-                <option value="Noto Sans SC">中文 - 思源黑体 (Noto Sans SC)</option>
-                <option value="Source Han Serif SC">中文 - 源汉宋体</option>
-            </select>
-            <button onclick="promptForAPIKey('readAloud')" id="playButton">Read Aloud</button>
-            <button onclick="readSelection()" id="readSelectionButtonMain">Read Selection</button>
-            <button onclick="stopReading()" id="stopButton">Stop</button>
+            <button onclick="deleteSelectedText()">Delete</button>
+        </div>
+        <div class="controls" role="toolbar" aria-label="Main controls">
             <span id="status" class="status" role="status"></span>
         </div>
-        <textarea id="textInput" placeholder="Enter or paste your text here..." aria-label="Text content"></textarea>
     </div>
     <div id="reader-mode">
         <div id="readerControls" class="controls hidden" role="toolbar" aria-label="Reader controls">
@@ -168,6 +160,7 @@
             <button onclick="autoFormat()">Auto Format</button>
             <button onclick="promptForAPIKey('readAloud')" id="playButtonReader">Read Aloud</button>
             <button onclick="readSelection()" id="readSelectionButton">Read Selection</button>
+            <button onclick="toggleLoopPlay()" id="loopPlayButton">Loop Play: Off</button>
             <button onclick="stopReading()" id="stopButtonReader">Stop</button>
         </div>
         <div id="content" tabindex="0" aria-label="Reader content"></div>
@@ -197,6 +190,7 @@
             stopButtonReader: document.getElementById('stopButtonReader'),
             readSelectionButton: document.getElementById('readSelectionButton'),
             readSelectionButtonMain: document.getElementById('readSelectionButtonMain'),
+            loopPlayButton: document.getElementById('loopPlayButton'),
             status: document.getElementById('status'),
             apiKeyDialog: document.getElementById('apiKeyDialog'),
             apiKeyInput: document.getElementById('apiKeyInput'),
@@ -428,106 +422,209 @@
         }
 
         async function playGoogleTTSAudio(text, type) {
-            if (audio) {
-                audio.pause();
-                URL.revokeObjectURL(audio.src);
-                audio = null;
-            }
-
-            if (!GOOGLE_API_KEY) {
-                promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
-                return;
-            }
-
             try {
+                stopReading();
+                let abortController = new AbortController();
+
+                if (!GOOGLE_API_KEY) {
+                    promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
+                    return;
+                }
+
+                const cacheKey = `audio_${hashText(text)}`;
+                showStatus('Processing text...');
+
+                // Try to get from cache first
+                const cachedAudio = localStorage.getItem(cacheKey);
+                if (cachedAudio) {
+                    try {
+                        audio = new Audio(cachedAudio);
+                        audio.onerror = (e) => {
+                            console.error('Cache playback error:', e);
+                            localStorage.removeItem(cacheKey);
+                            localStorage.removeItem(`${cacheKey}_time`);
+                            playGoogleTTSAudio(text, type); // Retry with fresh TTS
+                        };
+                        await audio.play();
+                        updateTTSButtons();
+                        showStatus('Playing from cache');
+                        audio.onended = () => {
+                            cleanupAudio();
+                            showStatus('Playback completed');
+                        };
+                        return;
+                    } catch (e) {
+                        console.warn('Cache playback failed:', e);
+                        localStorage.removeItem(cacheKey);
+                        localStorage.removeItem(`${cacheKey}_time`);
+                    }
+                }
+
                 const hasChinese = /[\u4e00-\u9fff]/.test(text);
                 const languageCode = hasChinese ? 'cmn-CN' : 'en-US';
                 const voiceName = hasChinese ? 'cmn-CN-Wavenet-A' : 'en-US-Wavenet-D';
-                const response = await fetch(`${GOOGLE_TTS_API_URL}?key=${GOOGLE_API_KEY}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        input: { text: text.slice(0, 5000) },
-                        voice: { languageCode, name: voiceName },
-                        audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0, pitch: 0 }
-                    })
-                });
+
+                const response = await Promise.race([
+                    fetch(`${GOOGLE_TTS_API_URL}?key=${GOOGLE_API_KEY}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input: { text: text.slice(0, 5000) },
+                            voice: { languageCode, name: voiceName },
+                            audioConfig: { audioEncoding: 'MP3', speakingRate: 1.0, pitch: 0 }
+                        }),
+                        signal: abortController.signal
+                    }),
+                    new Promise((_, reject) => 
+                        setTimeout(() => {
+                            abortController.abort();
+                            reject(new Error('Request timeout'));
+                        }, 30000)
+                    )
+                ]);
 
                 if (!response.ok) {
-                    throw new Error(`Google TTS API error: ${response.statusText}`);
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(`Google TTS API error: ${errorData.error?.message || response.statusText}`);
                 }
 
                 const data = await response.json();
                 const audioContent = data.audioContent;
                 const audioBlob = new Blob([Uint8Array.from(atob(audioContent), c => c.charCodeAt(0))], { type: 'audio/mp3' });
                 const audioUrl = URL.createObjectURL(audioBlob);
-                audio = new Audio(audioUrl);
 
-                const audioSize = audioBlob.size;
-                if (audioSize < MAX_CACHE_SIZE && estimateStorageSize() + audioSize < MAX_CACHE_SIZE) {
+                audio = new Audio(audioUrl);
+                audio.onerror = (e) => {
+                    console.error('Audio playback error:', e);
+                    cleanupAudio();
+                    showStatus('Audio playback failed', 'error');
+                };
+
+                // Cache the audio if size permits
+                if (audioBlob.size < MAX_CACHE_SIZE * 0.2) { // Limit single audio to 20% of max cache
                     const reader = new FileReader();
                     reader.onload = () => {
                         try {
+                            cleanOldCache(); // Clean before adding new item
                             localStorage.setItem(cacheKey, reader.result);
-                            cleanOldCache();
+                            localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
                         } catch (e) {
-                            console.warn('Audio caching failed: ', e);
+                            console.warn('Audio caching failed:', e);
+                            localStorage.removeItem(cacheKey);
+                            localStorage.removeItem(`${cacheKey}_time`);
                         }
                     };
                     reader.readAsDataURL(audioBlob);
                 }
 
-                audio.play().catch(e => showStatus(`Playback error: ${e.message}`, 'error'));
+                await audio.play();
                 updateTTSButtons();
                 showStatus('Reading started');
-                audio.onended = cleanupAudio;
-            } catch (e) {
-                showStatus(`TTS error: ${e.message}`, 'error');
-                promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
-            }
-        }
+                audio.onended = () => {
+                    cleanupAudio();
+                    showStatus('Reading completed');
+                };
 
-        function stopReading() {
-            if (audio) {
-                audio.pause();
-                URL.revokeObjectURL(audio.src);
-                audio = null;
-                updateTTSButtons();
-                showStatus('Reading stopped');
+            } catch (e) {
+                console.error('TTS error:', e);
+                cleanupAudio();
+                showStatus(`TTS error: ${e.message}`, 'error');
+                if (e.message.includes('API')) {
+                    promptForAPIKey(type === 'full' ? 'readAloud' : 'selection');
+                }
             }
         }
 
         function cleanupAudio() {
             if (audio) {
-                URL.revokeObjectURL(audio.src);
+                audio.pause();
+                if (audio.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(audio.src);
+                }
                 audio = null;
             }
             updateTTSButtons();
-            showStatus('Reading finished');
         }
 
         function updateTTSButtons() {
-            const isPlaying = audio && !audio.paused;
+            const isPlaying = audio !== null;
             elements.playButton.disabled = isPlaying;
-            elements.stopButton.disabled = !isPlaying;
             elements.playButtonReader.disabled = isPlaying;
-            elements.stopButtonReader.disabled = !isPlaying;
             elements.readSelectionButton.disabled = isPlaying;
-            elements.readSelectionButtonMain.disabled = !isPlaying;
+            elements.readSelectionButtonMain.disabled = isPlaying;
+            elements.stopButton.disabled = !isPlaying;
+            elements.stopButtonReader.disabled = !isPlaying;
+        }
 
-            elements.playButton.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
-            elements.playButtonReader.setAttribute('aria-pressed', isPlaying ? 'true' : 'false');
+        function stopReading() {
+            cleanupAudio();
+            showStatus('Reading stopped');
+        }
+
+        function cleanOldCache() {
+            const now = Date.now();
+            const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+            let totalSize = 0;
+            let cacheItems = [];
+        
+            // First pass: collect cache info and remove expired items
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key?.startsWith('audio_')) {
+                    const timeKey = `${key}_time`;
+                    const time = parseInt(localStorage.getItem(timeKey) || '0');
+                    const content = localStorage.getItem(key);
+                    
+                    if (!content || now - time > maxAge) {
+                        localStorage.removeItem(key);
+                        localStorage.removeItem(timeKey);
+                        i--; // Adjust index since we removed an item
+                        continue;
+                    }
+                    
+                    cacheItems.push({
+                        key,
+                        timeKey,
+                        time,
+                        size: content.length
+                    });
+                    totalSize += content.length;
+                }
+            }
+        
+            // If we're still over limit, remove oldest items until under limit
+            if (totalSize > MAX_CACHE_SIZE) {
+                cacheItems.sort((a, b) => b.time - a.time); // Sort by newest first
+                let currentSize = totalSize;
+                
+                for (let i = cacheItems.length - 1; i >= 0; i--) {
+                    if (currentSize <= MAX_CACHE_SIZE * 0.8) break; // Keep 20% free
+                    
+                    const item = cacheItems[i];
+                    localStorage.removeItem(item.key);
+                    localStorage.removeItem(item.timeKey);
+                    currentSize -= item.size;
+                }
+            }
+        }
+
+        function estimateStorageSize() {
+            let size = 0;
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                size += (localStorage.getItem(key) || '').length;
+            }
+            return size;
         }
 
         function hashText(text) {
             let hash = 0;
             for (let i = 0; i < text.length; i++) {
-                hash = ((hash << 5) - hash) + text.charCodeAt(i);
-                hash |= 0;
+                const char = text.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
             }
-            return hash.toString(36);
+            return Math.abs(hash).toString(36);
         }
 
         function estimateStorageSize() {
@@ -587,6 +684,12 @@
         updateTextList();
         elements.textInput.focus();
         updateTTSButtons();
+
+        // Add double-click handler for text list
+        elements.textList.addEventListener('dblclick', () => {
+            loadSelectedText();
+            if (!isReaderMode) toggleReaderMode();
+        });
     </script>
 </body>
 </html>
